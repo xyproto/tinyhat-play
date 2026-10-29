@@ -300,7 +300,7 @@ static gboolean launch_idle(gpointer data)
 	}
 	if (spawn_game(data, &err)) {
 		g_free(data);
-		gtk_widget_destroy(win);
+		gtk_window_destroy(GTK_WINDOW(win));
 		return G_SOURCE_REMOVE;
 	}
 	{
@@ -1462,7 +1462,7 @@ static gpointer worker(gpointer data)
 
 static void on_play(GtkWidget *w, gpointer data)
 {
-	const char *q = gtk_entry_get_text(GTK_ENTRY(entry));
+	const char *q = gtk_editable_get_text(GTK_EDITABLE(entry));
 	char *trimmed;
 	(void)w;
 	(void)data;
@@ -1479,19 +1479,28 @@ static void on_play(GtkWidget *w, gpointer data)
 	g_thread_unref(g_thread_new("tinyhat-play", worker, trimmed));
 }
 
-static void on_platform_toggled(GtkToggleButton *b, gpointer data)
+static void on_platform_toggled(GtkCheckButton *b, gpointer data)
 {
-	if (gtk_toggle_button_get_active(b))
+	if (gtk_check_button_get_active(b))
 		plat = data;
 }
 
-static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
+static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint keycode, GdkModifierType state, gpointer data)
 {
+	(void)c;
+	(void)keycode;
+	(void)state;
 	(void)data;
-	if (ev->keyval != GDK_KEY_Escape)
+	if (keyval != GDK_KEY_Escape)
 		return FALSE;
-	gtk_widget_destroy(w);
+	gtk_window_destroy(GTK_WINDOW(win));
 	return TRUE;
+}
+
+static void on_destroy(GtkWidget *w, gpointer loop)
+{
+	(void)w;
+	g_main_loop_quit(loop);
 }
 
 int main(int argc, char **argv)
@@ -1516,42 +1525,52 @@ int main(int argc, char **argv)
 		curl_global_cleanup();
 		return play_ok ? 0 : 1;
 	}
-	gtk_init(&argc, &argv);
-	win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	gtk_init();
+	GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+	win = gtk_window_new();
 	gtk_window_set_title(GTK_WINDOW(win), "Tiny Hat Play");
 	gtk_window_set_default_size(GTK_WINDOW(win), 540, 230);
-	g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-	g_signal_connect(win, "key-press-event", G_CALLBACK(on_key), NULL);
+	g_signal_connect(win, "destroy", G_CALLBACK(on_destroy), loop);
+	GtkEventController *keys = gtk_event_controller_key_new();
+	g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), NULL);
+	gtk_widget_add_controller(win, keys);
 	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-	gtk_container_set_border_width(GTK_CONTAINER(box), 16);
-	gtk_container_add(GTK_CONTAINER(win), box);
+	gtk_widget_set_margin_top(box, 16);
+	gtk_widget_set_margin_bottom(box, 16);
+	gtk_widget_set_margin_start(box, 16);
+	gtk_widget_set_margin_end(box, 16);
+	gtk_window_set_child(GTK_WINDOW(win), box);
 	GtkWidget *label = gtk_label_new("Choose a platform, then search for a homebrew game to download and run");
-	gtk_box_pack_start(GTK_BOX(box), label, TRUE, TRUE, 0);
+	gtk_widget_set_vexpand(label, TRUE);
+	gtk_box_append(GTK_BOX(box), label);
 	GtkWidget *grid = gtk_grid_new();
 	gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
 	gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
 	gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
 	for (size_t i = 0; i < G_N_ELEMENTS(radio_order); i++) {
 		int idx = radio_order[i];
-		GtkWidget *radio = gtk_radio_button_new_with_label_from_widget(
-		    i ? GTK_RADIO_BUTTON(radios[radio_order[0]]) : NULL, platforms[idx].name);
+		GtkWidget *radio = gtk_check_button_new_with_label(platforms[idx].name);
+		if (i)
+			gtk_check_button_set_group(GTK_CHECK_BUTTON(radio), GTK_CHECK_BUTTON(radios[radio_order[0]]));
 		radios[idx] = radio;
 		g_signal_connect(radio, "toggled", G_CALLBACK(on_platform_toggled), (gpointer)&platforms[idx]);
 		gtk_grid_attach(GTK_GRID(grid), radio, (int)(i % 3), (int)(i / 3), 1, 1);
 	}
-	gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 0);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radios[0]), TRUE);
+	gtk_box_append(GTK_BOX(box), grid);
+	gtk_check_button_set_active(GTK_CHECK_BUTTON(radios[0]), TRUE);
 	entry = gtk_entry_new();
 	g_signal_connect(entry, "activate", G_CALLBACK(on_play), NULL);
-	gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
+	gtk_box_append(GTK_BOX(box), entry);
 	button = gtk_button_new_with_label("Play");
 	g_signal_connect(button, "clicked", G_CALLBACK(on_play), NULL);
-	gtk_box_pack_start(GTK_BOX(box), button, FALSE, FALSE, 0);
+	gtk_box_append(GTK_BOX(box), button);
 	statuslbl = gtk_label_new("");
 	gtk_label_set_ellipsize(GTK_LABEL(statuslbl), PANGO_ELLIPSIZE_MIDDLE);
-	gtk_box_pack_start(GTK_BOX(box), statuslbl, TRUE, TRUE, 0);
-	gtk_widget_show_all(win);
-	gtk_main();
+	gtk_widget_set_vexpand(statuslbl, TRUE);
+	gtk_box_append(GTK_BOX(box), statuslbl);
+	gtk_window_present(GTK_WINDOW(win));
+	g_main_loop_run(loop);
+	g_main_loop_unref(loop);
 	curl_global_cleanup();
 	return 0;
 }
