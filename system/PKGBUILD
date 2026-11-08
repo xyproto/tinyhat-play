@@ -1,0 +1,28 @@
+# Maintainer: Alexander F. Rødseth <xyproto@archlinux.org>
+
+pkgname=tinyhat-play
+pkgver=1.3.0
+pkgrel=1
+pkgdesc='Search for, download and play homebrew games for retro platforms'
+arch=(x86_64)
+url='https://github.com/xyproto/tinyhat-play'
+license=(BSD-3-Clause)
+depends=(curl glib2 gtk4 libarchive sdl3)
+makedepends=(git)
+optdepends=('zsnes: SNES games'
+            'mgba-sdl: Game Boy Advance games'
+            'libretro-nestopia: NES games'
+            'libretro-blastem: Sega Genesis and Master System games'
+            'vice: C64 games'
+            'dosbox-x: DOS games'
+            'tic-80: TIC-80 games')
+source=("git+$url#tag=v$pkgver")
+b2sums=('SKIP')
+
+build() {
+  make -C $pkgname
+}
+
+package() {
+  make -C $pkgname DESTDIR="$pkgdir" PREFIX=/usr install
+}
