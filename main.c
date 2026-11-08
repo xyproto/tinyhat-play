@@ -61,9 +61,10 @@ static const Platform platforms[] = {
     { "TIC-80", "tic80", "ROMs/tic80", "tic-80 game", " tic tic80 ", "\\b(tic-?80)\\b", "tic80", 16 * MB },
     { "NES", "nes", "ROMs/nes", "nes rom", " nes fds unf unif ", "\\b(nes|famicom|nintendo entertainment system)\\b", "tinyhat-emulate", 8 * MB },
     { "Sega Master System", "sms", "ROMs/sms", "sega master system rom", " sms gg ", "\\b(master ?system|sms|game ?gear)\\b", "tinyhat-emulate", 8 * MB },
+    { "CHIP-8", "chip8", "ROMs/chip8", "chip-8 rom", " ch8 c8 sc8 xo8 ", "\\b(chip-?8|super-?chip|xo-?chip|octo)\\b", "octo-run", MB },
 };
 
-static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5 };
+static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5, 8 };
 
 static const Platform* plat = &platforms[0];
 
@@ -1045,6 +1046,8 @@ static int rom_ok(const char* path)
         return 0;
     n = fread(b, 1, sizeof(b), f);
     fclose(f);
+    if (!strcmp(plat->dir, "chip8"))
+        return n >= 2 && memcmp(b, "\x89PNG", 4) && memcmp(b, "GIF8", 4) && memcmp(b, "%PDF", 4) && memcmp(b, "PK\x03\x04", 4);
     if (n < sizeof(b) || !memcmp(b, "\xff\xd8\xff", 3) || !memcmp(b, "\x89PNG", 4) || !memcmp(b, "GIF8", 4) || !memcmp(b, "%PDF", 4))
         return 0;
     if (!strcmp(plat->dir, "tic80")) {
@@ -1409,12 +1412,74 @@ static char* try_candidates(GPtrArray* cands, const char* query)
     return rom;
 }
 
+#define CHIP8_ARCHIVE "https://johnearnest.github.io/chip8Archive/"
+
+static void chip8_archive(GPtrArray* cands, const char* query)
+{
+    GString* js;
+    const char* p;
+    char* id = NULL;
+    int depth = 0;
+    status("Searching the CHIP-8 Archive for \"%s\"", query);
+    js = fetch_page(CHIP8_ARCHIVE "programs.json", NULL, NULL);
+    if (!js)
+        return;
+    p = js->str;
+    while (*p) {
+        if (*p == '{' || *p == '[') {
+            depth++;
+            p++;
+        } else if (*p == '}' || *p == ']') {
+            depth--;
+            p++;
+        } else if (*p == '"') {
+            char* str = json_string(&p);
+            const char* q = p;
+            while (isspace((unsigned char)*q))
+                q++;
+            if (*q == ':' && depth == 1) {
+                g_free(id);
+                id = str;
+                str = NULL;
+            } else if (*q == ':' && depth == 2 && id && !strcmp(str, "title")) {
+                q++;
+                while (isspace((unsigned char)*q))
+                    q++;
+                if (*q == '"') {
+                    char* title = json_string(&q);
+                    int score = MAX(match_score(query, title), match_score(query, id));
+                    p = q;
+                    if (score > 0) {
+                        Candidate* c = g_new0(Candidate, 1);
+                        c->url = g_strdup_printf(CHIP8_ARCHIVE "roms/%s.ch8", id);
+                        c->name = g_strdup_printf("%s.ch8", id);
+                        c->direct = 1;
+                        c->score = score + 50;
+                        g_ptr_array_add(cands, c);
+                    }
+                    g_free(title);
+                }
+            }
+            g_free(str);
+        } else {
+            p++;
+        }
+    }
+    g_free(id);
+    g_string_free(js, TRUE);
+}
+
 static char* search_platform(const char* query, GPtrArray** itch)
 {
     char* rom = NULL;
     GPtrArray* cands = g_ptr_array_new_with_free_func(cand_free);
     GHashTable* seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    if (!ddg_blocked) {
+    if (!strcmp(plat->dir, "chip8")) {
+        chip8_archive(cands, query);
+        rom = try_candidates(cands, query);
+        g_ptr_array_set_size(cands, 0);
+    }
+    if (!rom && !ddg_blocked) {
         GPtrArray* results;
         status("Searching DuckDuckGo for a %s game named \"%s\"", plat->name, query);
         results = ddg_search(query);
