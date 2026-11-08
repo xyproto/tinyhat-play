@@ -300,7 +300,9 @@ static gboolean spawn_game(const char* rom, GError** err)
         argv[2] = (char*)rom;
         argv[3] = NULL;
     } else if (!strcmp(plat->launcher, "tinyhat-dosbox")) {
-        argv[0] = "tinyhat-dosbox";
+        char* found = g_find_program_in_path("tinyhat-dosbox");
+        argv[0] = found ? "tinyhat-dosbox" : "dosbox-x";
+        g_free(found);
         argv[1] = (char*)rom;
         argv[2] = NULL;
     } else {
@@ -1618,8 +1620,122 @@ static void on_destroy(GtkWidget* w, gpointer loop)
     g_main_loop_quit(loop);
 }
 
+static int choose_status = 1;
+
+static void choose_activated(GtkListBox* box, GtkListBoxRow* row, gpointer loop)
+{
+    (void)box;
+    puts(g_object_get_data(G_OBJECT(row), "line"));
+    choose_status = 0;
+    g_main_loop_quit(loop);
+}
+
+static gboolean choose_filter(GtkListBoxRow* row, gpointer entry)
+{
+    const char* text = gtk_editable_get_text(GTK_EDITABLE(entry));
+    char *hay, *needle;
+    gboolean ok;
+    if (!*text)
+        return TRUE;
+    hay = g_utf8_casefold(g_object_get_data(G_OBJECT(row), "line"), -1);
+    needle = g_utf8_casefold(text, -1);
+    ok = strstr(hay, needle) != NULL;
+    g_free(hay);
+    g_free(needle);
+    return ok;
+}
+
+static void choose_search_changed(GtkSearchEntry* entry, gpointer list)
+{
+    (void)entry;
+    gtk_list_box_invalidate_filter(GTK_LIST_BOX(list));
+}
+
+static void choose_search_activate(GtkSearchEntry* entry, gpointer list)
+{
+    (void)entry;
+    for (int i = 0;; i++) {
+        GtkListBoxRow* row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(list), i);
+        if (!row)
+            return;
+        if (gtk_widget_get_child_visible(GTK_WIDGET(row))) {
+            g_signal_emit_by_name(list, "row-activated", row);
+            return;
+        }
+    }
+}
+
+static gboolean choose_key(GtkEventControllerKey* c, guint keyval, guint keycode, GdkModifierType state, gpointer loop)
+{
+    (void)c;
+    (void)keycode;
+    (void)state;
+    if (keyval != GDK_KEY_Escape)
+        return FALSE;
+    g_main_loop_quit(loop);
+    return TRUE;
+}
+
+static int choose(const char* title)
+{
+    GMainLoop* loop;
+    GtkWidget *w, *box, *entry, *scroll, *list;
+    GtkEventController* keys;
+    char line[4096];
+    gtk_init();
+    loop = g_main_loop_new(NULL, FALSE);
+    w = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(w), title);
+    gtk_window_set_default_size(GTK_WINDOW(w), 640, 480);
+    g_signal_connect_swapped(w, "destroy", G_CALLBACK(g_main_loop_quit), loop);
+    keys = gtk_event_controller_key_new();
+    g_signal_connect(keys, "key-pressed", G_CALLBACK(choose_key), loop);
+    gtk_widget_add_controller(w, keys);
+    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_margin_top(box, 8);
+    gtk_widget_set_margin_bottom(box, 8);
+    gtk_widget_set_margin_start(box, 8);
+    gtk_widget_set_margin_end(box, 8);
+    gtk_window_set_child(GTK_WINDOW(w), box);
+    entry = gtk_search_entry_new();
+    gtk_box_append(GTK_BOX(box), entry);
+    scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_box_append(GTK_BOX(box), scroll);
+    list = gtk_list_box_new();
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
+    while (fgets(line, sizeof(line), stdin)) {
+        GtkWidget *row, *label;
+        char* base;
+        line[strcspn(line, "\n")] = '\0';
+        if (!line[0])
+            continue;
+        base = strchr(line, '/') ? g_path_get_basename(line) : g_strdup(line);
+        label = gtk_label_new(base);
+        gtk_label_set_xalign(GTK_LABEL(label), 0);
+        gtk_widget_set_tooltip_text(label, line);
+        row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+        g_object_set_data_full(G_OBJECT(row), "line", g_strdup(line), g_free);
+        gtk_list_box_append(GTK_LIST_BOX(list), row);
+        g_free(base);
+    }
+    gtk_list_box_set_filter_func(GTK_LIST_BOX(list), choose_filter, entry, NULL);
+    g_signal_connect(list, "row-activated", G_CALLBACK(choose_activated), loop);
+    g_signal_connect(entry, "search-changed", G_CALLBACK(choose_search_changed), list);
+    g_signal_connect(entry, "activate", G_CALLBACK(choose_search_activate), list);
+    gtk_search_entry_set_key_capture_widget(GTK_SEARCH_ENTRY(entry), w);
+    gtk_window_set_focus(GTK_WINDOW(w), entry);
+    gtk_window_present(GTK_WINDOW(w));
+    g_main_loop_run(loop);
+    g_main_loop_unref(loop);
+    return choose_status;
+}
+
 int main(int argc, char** argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "--choose"))
+        return choose(argc > 2 ? argv[2] : "Choose");
     curl_global_init(CURL_GLOBAL_DEFAULT);
     if (argc > 1) {
         GString* q = g_string_new(NULL);
