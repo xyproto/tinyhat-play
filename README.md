@@ -5,4 +5,4 @@ A C+GTK frontend for searching for, downloading and playing a homebrew retro gam
 Build with [`slay`](https://github.com/xyproto/slay).
 
 * License: BSD-3
-* Version: 1.1.1
+* Version: 1.2.0
