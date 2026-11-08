@@ -1618,7 +1618,9 @@ int main(int argc, char** argv)
     gtk_label_set_ellipsize(GTK_LABEL(statuslbl), PANGO_ELLIPSIZE_MIDDLE);
     gtk_widget_set_vexpand(statuslbl, TRUE);
     gtk_box_append(GTK_BOX(box), statuslbl);
+    gtk_window_set_focus(GTK_WINDOW(win), entry);
     gtk_window_present(GTK_WINDOW(win));
+    gtk_widget_grab_focus(entry);
     g_main_loop_run(loop);
     g_main_loop_unref(loop);
     curl_global_cleanup();
