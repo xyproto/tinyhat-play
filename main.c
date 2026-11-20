@@ -1,11 +1,13 @@
 #include <ctype.h>
 #include <curl/curl.h>
 #include <dirent.h>
+#include <glib/gstdio.h>
 #include <gtk/gtk.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define UA "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -17,6 +19,7 @@ static GtkWidget *win, *entry, *button, *statuslbl;
 static GtkWidget* radios[8];
 static gboolean busy = FALSE;
 static gboolean headless = FALSE;
+static int host_is(const char* host, const char* domain);
 static int play_ok = 0;
 static gboolean ddg_blocked = FALSE;
 static GHashTable* host_last = NULL;
@@ -405,7 +408,8 @@ static int fetch_with(CURL* c, const char* url, const char* post, struct curl_sl
     }
     if (host && host_last) {
         gint64* last = g_hash_table_lookup(host_last, host);
-        gint64 wait = last ? *last + 500000 - g_get_monotonic_time() : 0;
+        gint64 gap = host_is(host, "duckduckgo.com") ? 4000000 : 500000;
+        gint64 wait = last ? *last + gap - g_get_monotonic_time() : 0;
         if (wait > 0)
             g_usleep((gulong)wait);
     }
@@ -870,12 +874,41 @@ static char* ddg_target(const char* href)
     return g_strdup(href);
 }
 
+static char* ddg_block_path(void)
+{
+    char* c = cache_dir();
+    char* path = g_build_filename(c, "duckduckgo-limited", NULL);
+    g_free(c);
+    return path;
+}
+
+static gboolean ddg_recently_blocked(void)
+{
+    char* path = ddg_block_path();
+    GStatBuf st;
+    gboolean recent = g_stat(path, &st) == 0 && time(NULL) - st.st_mtime < 3600;
+    g_free(path);
+    return recent;
+}
+
+static void ddg_mark_blocked(void)
+{
+    char *c = cache_dir(), *path = ddg_block_path();
+    ddg_blocked = TRUE;
+    if (g_mkdir_with_parents(c, 0755) == 0)
+        g_file_set_contents(path, "", 0, NULL);
+    g_free(path);
+    g_free(c);
+}
+
 static void ddg_collect(GString* page, GPtrArray* results, const char* pattern)
 {
     if (!page)
         return;
-    if (strstr(page->str, "anomaly"))
-        ddg_blocked = TRUE;
+    if (strstr(page->str, "anomaly")) {
+        ddg_mark_blocked();
+        return;
+    }
     GRegex* re = g_regex_new(pattern, 0, 0, NULL);
     GMatchInfo* mi;
     g_regex_match(re, page->str, 0, &mi);
@@ -895,6 +928,50 @@ static void ddg_collect(GString* page, GPtrArray* results, const char* pattern)
     g_regex_unref(re);
 }
 
+static char* search_cache_path(const char* query)
+{
+    char *key = index_key(query, plat), *c = cache_dir();
+    char* sum = g_compute_checksum_for_string(G_CHECKSUM_SHA256, key, -1);
+    char* name = g_strdup_printf("%s-%.32s", plat->dir, sum);
+    char* path = g_build_filename(c, "search", name, NULL);
+    g_free(name);
+    g_free(sum);
+    g_free(c);
+    g_free(key);
+    return path;
+}
+
+static GPtrArray* search_cache_load(const char* query)
+{
+    char *path = search_cache_path(query), *data = NULL;
+    GPtrArray* results = NULL;
+    GStatBuf st;
+    if (g_stat(path, &st) == 0 && time(NULL) - st.st_mtime < 7 * 24 * 3600 && g_file_get_contents(path, &data, NULL, NULL)) {
+        char** lines = g_strsplit(data, "\n", -1);
+        results = g_ptr_array_new_with_free_func(g_free);
+        for (char** l = lines; *l; l++)
+            if (**l)
+                g_ptr_array_add(results, g_strdup(*l));
+        g_strfreev(lines);
+        g_free(data);
+    }
+    g_free(path);
+    return results;
+}
+
+static void search_cache_save(const char* query, GPtrArray* results)
+{
+    char *path = search_cache_path(query), *dir = g_path_get_dirname(path);
+    GString* out = g_string_new(NULL);
+    for (guint i = 0; i < results->len; i++)
+        g_string_append_printf(out, "%s\n", (const char*)results->pdata[i]);
+    if (g_mkdir_with_parents(dir, 0755) == 0)
+        g_file_set_contents(path, out->str, (gssize)out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(dir);
+    g_free(path);
+}
+
 static GPtrArray* ddg_search(const char* query)
 {
     GPtrArray* results = g_ptr_array_new_with_free_func(g_free);
@@ -905,7 +982,7 @@ static GPtrArray* ddg_search(const char* query)
     ddg_collect(page, results, "class=\"result__a\"[^>]*href=\"([^\"]+)\"");
     if (page)
         g_string_free(page, TRUE);
-    if (results->len == 0) {
+    if (results->len == 0 && !ddg_blocked) {
         page = fetch_page("https://lite.duckduckgo.com/lite/", post, NULL);
         ddg_collect(page, results, "rel=\"nofollow\" href=\"([^\"]+)\"");
         if (page)
@@ -1471,6 +1548,79 @@ static void chip8_archive(GPtrArray* cands, const char* query)
     g_string_free(js, TRUE);
 }
 
+static const char* hh_after(const char* text, const char* key, const char* limit)
+{
+    const char* p = strstr(text, key);
+    return p && (!limit || p < limit) ? p + strlen(key) : NULL;
+}
+
+static void hh_entry(GPtrArray* cands, const char* obj, const char* end)
+{
+    const char *slug = hh_after(obj, "\"slug\": \"", end), *base = hh_after(obj, "\"basepath\": \"", end);
+    const char *files = hh_after(obj, "\"files\": [", end), *files_end = files ? strchr(files, ']') : NULL;
+    char *slug_s, *base_s;
+    if (!slug || !base || !files_end || files_end > end)
+        return;
+    slug_s = g_strndup(slug, strcspn(slug, "\""));
+    base_s = g_strndup(base, strcspn(base, "\""));
+    for (const char* f = files; (f = hh_after(f, "\"filename\": \"", files_end)) != NULL;) {
+        char* name = g_strndup(f, strcspn(f, "\""));
+        if (ext_in(name, plat->exts) && !strchr(name, '/') && !strstr(name, "..") && !strchr(slug_s, '/') && !strchr(base_s, '/')) {
+            Candidate* c = g_new0(Candidate, 1);
+            c->url = g_strdup_printf("https://hh3.gbdev.io/static/%s/entries/%s/%s", base_s, slug_s, name);
+            c->score = 1000;
+            c->direct = 1;
+            g_ptr_array_add(cands, c);
+        }
+        g_free(name);
+    }
+    g_free(slug_s);
+    g_free(base_s);
+}
+
+static void hh_search(GPtrArray* cands, const char* query)
+{
+    char* esc = g_uri_escape_string(query, NULL, FALSE);
+    char* url = g_strdup_printf("https://hh3.gbdev.io/api/search?q=%s&platform=%s", esc, !strcmp(plat->dir, "gba") ? "GBA" : "NES");
+    GString* page;
+    status("Searching Homebrew Hub for a %s game named \"%s\"", plat->name, query);
+    page = fetch_page(url, NULL, NULL);
+    if (page) {
+        const char* p = strstr(page->str, "\"entries\"");
+        p = p ? strchr(p, '[') : NULL;
+        while (p && *p && *p != ']') {
+            const char* obj = strchr(p, '{');
+            const char* q;
+            int depth = 0, in_str = 0;
+            if (!obj)
+                break;
+            for (q = obj; *q; q++) {
+                if (in_str) {
+                    if (*q == '\\' && q[1])
+                        q++;
+                    else if (*q == '"')
+                        in_str = 0;
+                } else if (*q == '"') {
+                    in_str = 1;
+                } else if (*q == '{') {
+                    depth++;
+                } else if (*q == '}' && --depth == 0) {
+                    break;
+                }
+            }
+            if (!*q)
+                break;
+            hh_entry(cands, obj, q);
+            p = q + 1;
+            while (*p == ',' || *p == ' ' || *p == '\n')
+                p++;
+        }
+        g_string_free(page, TRUE);
+    }
+    g_free(url);
+    g_free(esc);
+}
+
 static char* search_platform(const char* query, GPtrArray** itch)
 {
     char* rom = NULL;
@@ -1481,10 +1631,21 @@ static char* search_platform(const char* query, GPtrArray** itch)
         rom = try_candidates(cands, query);
         g_ptr_array_set_size(cands, 0);
     }
-    if (!rom && !ddg_blocked) {
-        GPtrArray* results;
-        status("Searching DuckDuckGo for a %s game named \"%s\"", plat->name, query);
-        results = ddg_search(query);
+    if (!rom && (!strcmp(plat->dir, "gba") || !strcmp(plat->dir, "nes"))) {
+        hh_search(cands, query);
+        rom = try_candidates(cands, query);
+        g_ptr_array_set_size(cands, 0);
+    }
+    if (!rom) {
+        GPtrArray* results = search_cache_load(query);
+        if (!results && !ddg_blocked) {
+            status("Searching DuckDuckGo for a %s game named \"%s\"", plat->name, query);
+            results = ddg_search(query);
+            if (results->len)
+                search_cache_save(query, results);
+        }
+        if (!results)
+            results = g_ptr_array_new_with_free_func(g_free);
         for (guint i = 0; i < results->len; i++) {
             const char* url = results->pdata[i];
             char* eff = NULL;
@@ -1535,7 +1696,7 @@ static gpointer worker(gpointer data)
         g_free(query);
         return NULL;
     }
-    ddg_blocked = FALSE;
+    ddg_blocked = ddg_recently_blocked();
     host_last = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     host_limited = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     if (headless) {
