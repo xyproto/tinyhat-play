@@ -35,4 +35,4 @@ On [Tiny Hat](https://roboticoverlords.org/tinyhat), `fuzzel`, `tinyhat-pick` an
 ### General info
 
 * License: BSD-3
-* Version: 1.3.4
+* Version: 1.3.5
