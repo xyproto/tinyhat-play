@@ -318,6 +318,22 @@ static gboolean spawn_game(const char* rom, GError** err)
     return g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, err);
 }
 
+static void notify(const char* summary, const char* body)
+{
+    GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    GVariant* r;
+    if (!bus)
+        return;
+    r = g_dbus_connection_call_sync(bus, "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications", "Notify",
+        g_variant_new("(susss^as@a{sv}i)", "Tiny Hat Play", 0, "", summary, body, (const char* const[]) { NULL },
+            g_variant_new_array(G_VARIANT_TYPE("{sv}"), NULL, 0), 8000),
+        NULL, G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
+    if (r)
+        g_variant_unref(r);
+    g_object_unref(bus);
+}
+
 static gboolean launch_idle(gpointer data)
 {
     GError* err = NULL;
@@ -326,6 +342,13 @@ static gboolean launch_idle(gpointer data)
         return G_SOURCE_REMOVE;
     }
     if (spawn_game(data, &err)) {
+        char* b = g_path_get_basename(data);
+        char* summary = g_strdup_printf("Starting %s", b);
+        char* body = g_strdup_printf("%s game", plat->name);
+        notify(summary, body);
+        g_free(summary);
+        g_free(body);
+        g_free(b);
         g_free(data);
         gtk_window_destroy(GTK_WINDOW(win));
         return G_SOURCE_REMOVE;
@@ -1977,7 +2000,7 @@ int main(int argc, char** argv)
     gtk_widget_set_margin_start(box, 16);
     gtk_widget_set_margin_end(box, 16);
     gtk_window_set_child(GTK_WINDOW(win), box);
-    GtkWidget* label = gtk_label_new("Choose a platform, then search for a homebrew game to download and run. It may take a little to launch it.");
+    GtkWidget* label = gtk_label_new("Choose a platform, then search for a homebrew game to download and run. It may take a little while to launch it.");
     gtk_label_set_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(label), 40);
     gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
