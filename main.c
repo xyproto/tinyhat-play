@@ -10,13 +10,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#define UA "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+#define UA "Mozilla/5.0 (X11; Linux) TinySurf/1.1"
 #define MAX_PAGE (4 * 1024 * 1024)
 #define MAX_RESULTS 10
 #define MB (1024 * 1024)
 
 static GtkWidget *win, *entry, *button, *statuslbl;
-static GtkWidget* radios[8];
 static gboolean busy = FALSE;
 static gboolean headless = FALSE;
 static int host_is(const char* host, const char* domain);
@@ -24,6 +23,8 @@ static int play_ok = 0;
 static gboolean ddg_blocked = FALSE;
 static GHashTable* host_last = NULL;
 static GHashTable* host_limited = NULL;
+static CURLSH* share = NULL;
+static GMutex share_lock[CURL_LOCK_DATA_LAST];
 
 static char* url_host(const char* url);
 
@@ -68,6 +69,7 @@ static const Platform platforms[] = {
 };
 
 static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5, 8 };
+static GtkWidget* radios[G_N_ELEMENTS(platforms)];
 
 static const Platform* plat = &platforms[0];
 
@@ -374,7 +376,35 @@ static size_t sink_write(char* ptr, size_t size, size_t nmemb, void* ud)
     return n;
 }
 
-static CURL* new_handle(int cookies)
+static void share_lock_cb(CURL* c, curl_lock_data data, curl_lock_access access, void* ud)
+{
+    (void)c;
+    (void)access;
+    (void)ud;
+    g_mutex_lock(&share_lock[data]);
+}
+
+static void share_unlock_cb(CURL* c, curl_lock_data data, void* ud)
+{
+    (void)c;
+    (void)ud;
+    g_mutex_unlock(&share_lock[data]);
+}
+
+static void sink_reset(Sink* s)
+{
+    s->got = 0;
+    if (s->buf) {
+        g_string_truncate(s->buf, 0);
+    } else if (s->fp) {
+        fflush(s->fp);
+        rewind(s->fp);
+        if (ftruncate(fileno(s->fp), 0) != 0)
+            s->got = s->max;
+    }
+}
+
+static CURL* new_handle(void)
 {
     CURL* c = curl_easy_init();
     if (!c)
@@ -388,10 +418,11 @@ static CURL* new_handle(int cookies)
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 120L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 512L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 20L);
-    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, sink_write);
-    if (cookies)
-        curl_easy_setopt(c, CURLOPT_COOKIEFILE, "");
+    curl_easy_setopt(c, CURLOPT_COOKIEFILE, "");
+    if (share)
+        curl_easy_setopt(c, CURLOPT_SHARE, share);
     return c;
 }
 
@@ -415,8 +446,8 @@ static int fetch_with(CURL* c, const char* url, const char* post, struct curl_sl
     }
     for (it = hdr; it; it = it->next)
         all = curl_slist_append(all, it->data);
-    all = curl_slist_append(all, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-    all = curl_slist_append(all, "Accept-Language: en-US,en;q=0.5");
+    all = curl_slist_append(all, "Pragma:");
+    all = curl_slist_append(all, "Expect:");
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, s);
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, all);
@@ -426,6 +457,14 @@ static int fetch_with(CURL* c, const char* url, const char* post, struct curl_sl
         curl_easy_setopt(c, CURLOPT_HTTPGET, 1L);
     rc = curl_easy_perform(c);
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    if (code == 429) {
+        g_usleep(1500000);
+        sink_reset(s);
+        if (s->got == 0) {
+            rc = curl_easy_perform(c);
+            curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+        }
+    }
     curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &eff);
     if (host && host_last) {
         gint64* now = g_new(gint64, 1);
@@ -443,7 +482,7 @@ static int fetch_with(CURL* c, const char* url, const char* post, struct curl_sl
 
 static int fetch(const char* url, const char* post, Sink* s, char** effective)
 {
-    CURL* c = new_handle(0);
+    CURL* c = new_handle();
     int ok;
     if (!c)
         return 0;
@@ -454,7 +493,7 @@ static int fetch(const char* url, const char* post, Sink* s, char** effective)
 
 static curl_off_t remote_size(const char* url)
 {
-    CURL* c = new_handle(0);
+    CURL* c = new_handle();
     curl_off_t len = -1;
     CURLcode rc;
     if (!c)
@@ -471,7 +510,7 @@ static curl_off_t remote_size(const char* url)
 
 static int fetch_limited(const char* url, Sink* s, curl_off_t max)
 {
-    CURL* c = new_handle(0);
+    CURL* c = new_handle();
     int ok;
     if (!c)
         return 0;
@@ -770,7 +809,7 @@ static void itch_discover(GPtrArray* cands, GHashTable* seen, const char* query,
     }
     g_hash_table_add(seen, g_strdup(page));
     base = match_score(query, strrchr(page, '/') + 1);
-    if (base <= 0 || !(c = new_handle(1))) {
+    if (base <= 0 || !(c = new_handle())) {
         g_free(page);
         return;
     }
@@ -799,7 +838,7 @@ static void itch_discover(GPtrArray* cands, GHashTable* seen, const char* query,
 
 static char* itch_resolve(Candidate* cand)
 {
-    CURL* c = new_handle(1);
+    CURL* c = new_handle();
     Sink s = { g_string_new(NULL), NULL, 0, MAX_PAGE };
     char* url = NULL;
     if (c && fetch_with(c, cand->page, NULL, NULL, &s, NULL))
@@ -1898,6 +1937,12 @@ int main(int argc, char** argv)
     if (argc > 1 && !strcmp(argv[1], "--choose"))
         return choose(argc > 2 ? argv[2] : "Choose");
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    share = curl_share_init();
+    if (share) {
+        curl_share_setopt(share, CURLSHOPT_LOCKFUNC, share_lock_cb);
+        curl_share_setopt(share, CURLSHOPT_UNLOCKFUNC, share_unlock_cb);
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
+    }
     if (argc > 1) {
         GString* q = g_string_new(NULL);
         char* query;
@@ -1921,7 +1966,7 @@ int main(int argc, char** argv)
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);
     win = gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(win), "Tiny Hat Play");
-    gtk_window_set_default_size(GTK_WINDOW(win), 540, 230);
+    gtk_window_set_default_size(GTK_WINDOW(win), 420, -1);
     g_signal_connect(win, "destroy", G_CALLBACK(on_destroy), loop);
     GtkEventController* keys = gtk_event_controller_key_new();
     g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), NULL);
@@ -1933,12 +1978,15 @@ int main(int argc, char** argv)
     gtk_widget_set_margin_end(box, 16);
     gtk_window_set_child(GTK_WINDOW(win), box);
     GtkWidget* label = gtk_label_new("Choose a platform, then search for a homebrew game to download and run");
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 40);
+    gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
     gtk_widget_set_vexpand(label, TRUE);
     gtk_box_append(GTK_BOX(box), label);
     GtkWidget* grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
     gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
-    gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
+    gtk_grid_set_column_homogeneous(GTK_GRID(grid), FALSE);
     for (size_t i = 0; i < G_N_ELEMENTS(radio_order); i++) {
         int idx = radio_order[i];
         GtkWidget* radio = gtk_check_button_new_with_label(platforms[idx].name);
