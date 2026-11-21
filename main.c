@@ -1977,7 +1977,7 @@ int main(int argc, char** argv)
     gtk_widget_set_margin_start(box, 16);
     gtk_widget_set_margin_end(box, 16);
     gtk_window_set_child(GTK_WINDOW(win), box);
-    GtkWidget* label = gtk_label_new("Choose a platform, then search for a homebrew game to download and run");
+    GtkWidget* label = gtk_label_new("Choose a platform, then search for a homebrew or freeware game to download and run");
     gtk_label_set_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(label), 40);
     gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
