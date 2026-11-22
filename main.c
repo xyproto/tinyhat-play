@@ -57,15 +57,15 @@ typedef struct {
 } Platform;
 
 static const Platform platforms[] = {
-    { "SNES", "snes", "ROMs/snes", "snes rom", " sfc smc fig swc ", "\\b(snes|super nintendo|super famicom|sfc)\\b", "tinyhat-emulate", 64 * MB },
-    { "GBA", "gba", "ROMs/gba", "gba rom", " gba ", "\\b(gba|game ?boy advance)\\b", "tinyhat-emulate", 64 * MB },
-    { "Sega Genesis", "genesis", "ROMs/genesis", "sega genesis rom", " md gen smd bin ", "\\b(genesis|mega ?drive)\\b", "tinyhat-emulate", 32 * MB },
-    { "C64", "c64", "ROMs/c64", "c64 game", " d64 d71 d81 g64 prg t64 tap crt p00 ", "\\b(commodore ?64|c64)\\b", "tinyhat-emulate", 16 * MB },
-    { "DOS", "dos", "DOS", "dos game", " exe com bat iso img cue ", "\\b(dos|ms-?dos)\\b", "tinyhat-dosbox", 512 * MB },
-    { "TIC-80", "tic80", "ROMs/tic80", "tic-80 game", " tic tic80 ", "\\b(tic-?80)\\b", "tic80", 16 * MB },
-    { "NES", "nes", "ROMs/nes", "nes rom", " nes fds unf unif ", "\\b(nes|famicom|nintendo entertainment system)\\b", "tinyhat-emulate", 8 * MB },
-    { "Sega Master System", "sms", "ROMs/sms", "sega master system rom", " sms gg ", "\\b(master ?system|sms|game ?gear)\\b", "tinyhat-emulate", 8 * MB },
-    { "CHIP-8", "chip8", "ROMs/chip8", "chip-8 rom", " ch8 c8 sc8 xo8 ", "\\b(chip-?8|super-?chip|xo-?chip|octo)\\b", "octo-run", MB },
+    { "SNES", "snes", "roms/SNES", "snes rom", " sfc smc fig swc ", "\\b(snes|super nintendo|super famicom|sfc)\\b", "tinyhat-emulate", 64 * MB },
+    { "GBA", "gba", "roms/gba", "gba rom", " gba ", "\\b(gba|game ?boy advance)\\b", "tinyhat-emulate", 64 * MB },
+    { "Sega Genesis", "genesis", "roms/genesis", "sega genesis rom", " md gen smd bin ", "\\b(genesis|mega ?drive)\\b", "tinyhat-emulate", 32 * MB },
+    { "C64", "c64", "roms/c64", "c64 game", " d64 d71 d81 g64 prg t64 tap crt p00 ", "\\b(commodore ?64|c64)\\b", "tinyhat-emulate", 16 * MB },
+    { "DOS", "dos", "roms/DOS", "dos game", " exe com bat iso img cue ", "\\b(dos|ms-?dos)\\b", "tinyhat-dosbox", 512 * MB },
+    { "TIC-80", "tic80", "roms/tic80", "tic-80 game", " tic tic80 ", "\\b(tic-?80)\\b", "tic80", 16 * MB },
+    { "NES", "nes", "roms/NES", "nes rom", " nes fds unf unif ", "\\b(nes|famicom|nintendo entertainment system)\\b", "tinyhat-emulate", 8 * MB },
+    { "Sega Master System", "sms", "roms/sms", "sega master system rom", " sms gg ", "\\b(master ?system|sms|game ?gear)\\b", "tinyhat-emulate", 8 * MB },
+    { "CHIP-8", "chip8", "roms/chip8", "chip-8 rom", " ch8 c8 sc8 xo8 ", "\\b(chip-?8|super-?chip|xo-?chip|octo)\\b", "octo-run", MB },
 };
 
 static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5, 8 };
