@@ -26,12 +26,17 @@ genesis) core=blastem name="Genesis" pattern='\.(md|gen|smd|bin)$' ;;
 sms) core=blastem name="Master System" pattern='\.(sms|gg)$' ;;
 gba) emu=mgba name="Game Boy Advance" pattern='\.(gba|gb|gbc)$' ;;
 c64) name="C64" pattern='\.(d64|d71|d81|g64|prg|t64|tap|crt|p00)$' ;;
+zx) core=fuse name="ZX Spectrum" pattern='\.(tap|tzx|z80|sna|szx|dsk|trd|scl|rzx)$' ;;
 *)
-	echo "usage: tinyhat-emulate nes|snes|genesis|sms|gba|c64 [game]" >&2
+	echo "usage: tinyhat-emulate nes|snes|genesis|sms|gba|c64|zx [game]" >&2
 	exit 1
 	;;
 esac
-dir=$HOME/ROMs/$platform
+case $platform in
+nes | snes) sub=$(printf '%s' "$platform" | tr a-z A-Z) ;;
+*) sub=$platform ;;
+esac
+dir=$HOME/roms/$sub
 mkdir -p "$dir"
 game=${2-}
 if [ -z "$game" ]; then
@@ -40,13 +45,13 @@ if [ -z "$game" ]; then
 		[ -n "$game" ] || exit 0
 	else
 		list=$(find "$dir" /media /run/media -maxdepth 4 -type f 2>/dev/null | grep -i -E "$pattern" | sort)
-		if [ "$platform" = c64 ]; then
+		if [ "$platform" = c64 ] || [ "$platform" = zx ]; then
 			game=$(printf 'Start BASIC\n%s' "$list" | choose "$name") || exit 0
 			[ "$game" = "Start BASIC" ] && game=
 		elif [ -z "$list" ] && [ "$platform" = snes ]; then
 			exec zsnes
 		elif [ -z "$list" ]; then
-			notice "Put $name games in ~/ROMs/$platform or on a USB stick"
+			notice "Put $name games in ~/roms/$sub or on a USB stick"
 			exit 0
 		else
 			game=$(printf '%s\n' "$list" | choose "$name game") || exit 0
@@ -73,7 +78,7 @@ if [ -z "$core" ]; then
 fi
 for libdir in /usr/lib/libretro /usr/lib64/libretro /usr/local/lib/libretro; do
 	if [ -f "$libdir/${core}_libretro.so" ]; then
-		exec tinyhat-retro "$libdir/${core}_libretro.so" "$game"
+		exec tinyhat-retro "$libdir/${core}_libretro.so" ${game:+"$game"}
 	fi
 done
 notice "The $core libretro core is not installed (look for libretro-$core)"

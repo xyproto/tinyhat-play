@@ -66,9 +66,11 @@ static const Platform platforms[] = {
     { "NES", "nes", "roms/NES", "nes rom", " nes fds unf unif ", "\\b(nes|famicom|nintendo entertainment system)\\b", "tinyhat-emulate", 8 * MB },
     { "Sega Master System", "sms", "roms/sms", "sega master system rom", " sms gg ", "\\b(master ?system|sms|game ?gear)\\b", "tinyhat-emulate", 8 * MB },
     { "CHIP-8", "chip8", "roms/chip8", "chip-8 rom", " ch8 c8 sc8 xo8 ", "\\b(chip-?8|super-?chip|xo-?chip|octo)\\b", "octo-run", MB },
+    { "ZX Spectrum", "zx", "roms/zx", "zx spectrum game", " tap tzx z80 sna szx dsk trd scl ", "\\b(zx ?spectrum|speccy)\\b", "tinyhat-emulate", 16 * MB },
+    { "WINE", "wine", "roms/wine", "WIN32", " exe ", "\\b(windows|win32|wine)\\b", "wine", 512 * MB },
 };
 
-static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5, 8 };
+static const int radio_order[] = { 3, 4, 1, 6, 2, 7, 0, 5, 8, 9, 10 };
 static GtkWidget* radios[G_N_ELEMENTS(platforms)];
 
 static const Platform* plat = &platforms[0];
@@ -85,6 +87,16 @@ static const char* home(void)
 {
     const char* h = g_get_home_dir();
     return h && *h ? h : "/tmp";
+}
+
+static gboolean available(const Platform* p)
+{
+    char* found;
+    if (strcmp(p->launcher, "wine"))
+        return TRUE;
+    found = g_find_program_in_path("wine");
+    g_free(found);
+    return found != NULL;
 }
 
 static char* rom_dir_for(const Platform* p)
@@ -228,7 +240,7 @@ static char* find_cached(const char* query, const Platform** found_plat)
         char *hit, *dir;
         DIR* d;
         struct dirent* e;
-        if (!headless && p != plat)
+        if ((!headless && p != plat) || !available(p))
             continue;
         hit = index_lookup(query, p);
         if (hit) {
@@ -304,6 +316,15 @@ static gboolean spawn_game(const char* rom, GError** err)
         argv[1] = (char*)plat->dir;
         argv[2] = (char*)rom;
         argv[3] = NULL;
+    } else if (!strcmp(plat->launcher, "wine")) {
+        char* dir = g_path_get_dirname(rom);
+        gboolean ok;
+        argv[0] = "wine";
+        argv[1] = (char*)rom;
+        argv[2] = NULL;
+        ok = g_spawn_async(dir, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, err);
+        g_free(dir);
+        return ok;
     } else if (!strcmp(plat->launcher, "tinyhat-dosbox")) {
         char* found = g_find_program_in_path("tinyhat-dosbox");
         argv[0] = found ? "tinyhat-dosbox" : "dosbox-x";
@@ -1209,6 +1230,8 @@ static int rom_ok(const char* path)
         g_free(all);
         return ok;
     }
+    if (!strcmp(plat->dir, "wine"))
+        return !memcmp(b, "MZ", 2);
     if (!strcmp(plat->dir, "gba"))
         return b[0xb2] == 0x96;
     if (!strcmp(plat->dir, "nes") && ext_in(path, " nes "))
@@ -1326,9 +1349,12 @@ static void dos_scan(const char* dir, int depth, const char* game, const char* q
             g_free(p);
             continue;
         }
-        rank = ext_in(n, " bat ") ? 1 : ext_in(n, " exe ") ? 2
-            : ext_in(n, " com ")                           ? 3
-                                                           : 0;
+        if (!strcmp(plat->dir, "wine"))
+            rank = ext_in(n, " exe ") ? 1 : 0;
+        else
+            rank = ext_in(n, " bat ") ? 1 : ext_in(n, " exe ") ? 2
+                : ext_in(n, " com ")                           ? 3
+                                                               : 0;
         st = stem(n);
         norm(st, ns, sizeof(ns));
         g_free(st);
@@ -1354,10 +1380,10 @@ static void dos_scan(const char* dir, int depth, const char* game, const char* q
 static char* install_dos(const char* extract, const char* game, const char* query)
 {
     GDir* d = g_dir_open(extract, 0, NULL);
-    char *root = g_strdup(extract), *best = NULL, *dir, *target, *dest = NULL, nm[256], base[9];
+    char *root = g_strdup(extract), *best = NULL, *dir, *target, *dest = NULL, nm[256], base[33];
     const char* n;
-    int count = 0, rank = 0, depth = 0;
-    size_t len = 0;
+    int count = 0, rank = 0, depth = 0, dos = !strcmp(plat->dir, "dos");
+    size_t len = 0, lim = dos ? 8 : 32;
     if (d) {
         char* only = NULL;
         while ((n = g_dir_read_name(d))) {
@@ -1379,8 +1405,8 @@ static char* install_dos(const char* extract, const char* game, const char* quer
         return NULL;
     }
     norm(game && game[0] ? game : query, nm, sizeof(nm));
-    for (; nm[len] && len < 8; len++)
-        base[len] = (char)toupper((unsigned char)nm[len]);
+    for (; nm[len] && len < lim; len++)
+        base[len] = dos ? (char)toupper((unsigned char)nm[len]) : nm[len];
     base[len] = '\0';
     if (!len)
         g_strlcpy(base, "GAME", sizeof(base));
@@ -1388,7 +1414,7 @@ static char* install_dos(const char* extract, const char* game, const char* quer
     g_mkdir_with_parents(dir, 0755);
     target = g_build_filename(dir, base, NULL);
     for (char i = '2'; g_file_test(target, G_FILE_TEST_EXISTS) && i <= '9'; i++) {
-        size_t k = strlen(base) < 8 ? strlen(base) : 7;
+        size_t k = strlen(base) < lim ? strlen(base) : lim - 1;
         base[k] = i;
         base[k + 1] = '\0';
         g_free(target);
@@ -1467,7 +1493,7 @@ static char* install(const char* query, Candidate* c, const char* work)
         argv[4] = extract;
         status("Extracting %s", name);
         if (g_spawn_sync(NULL, argv, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL, NULL, NULL, NULL, NULL, &st, NULL) && g_spawn_check_wait_status(st, NULL)) {
-            if (!strcmp(plat->dir, "dos")) {
+            if (!strcmp(plat->dir, "dos") || !strcmp(plat->dir, "wine")) {
                 char* game = stem(c->name ? c->name : name);
                 dest = install_dos(extract, game, query);
                 g_free(game);
@@ -1764,7 +1790,8 @@ static gpointer worker(gpointer data)
     if (headless) {
         for (size_t i = 0; i < G_N_ELEMENTS(platforms) && !rom; i++) {
             plat = &platforms[i];
-            rom = search_platform(query, &itch);
+            if (available(plat))
+                rom = search_platform(query, &itch);
         }
     } else {
         rom = search_platform(query, &itch);
@@ -2010,14 +2037,18 @@ int main(int argc, char** argv)
     gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
     gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
     gtk_grid_set_column_homogeneous(GTK_GRID(grid), FALSE);
-    for (size_t i = 0; i < G_N_ELEMENTS(radio_order); i++) {
+    for (size_t i = 0, pos = 0; i < G_N_ELEMENTS(radio_order); i++) {
         int idx = radio_order[i];
-        GtkWidget* radio = gtk_check_button_new_with_label(platforms[idx].name);
-        if (i)
+        GtkWidget* radio;
+        if (!available(&platforms[idx]))
+            continue;
+        radio = gtk_check_button_new_with_label(platforms[idx].name);
+        if (pos)
             gtk_check_button_set_group(GTK_CHECK_BUTTON(radio), GTK_CHECK_BUTTON(radios[radio_order[0]]));
         radios[idx] = radio;
         g_signal_connect(radio, "toggled", G_CALLBACK(on_platform_toggled), (gpointer)&platforms[idx]);
-        gtk_grid_attach(GTK_GRID(grid), radio, (int)(i % 3), (int)(i / 3), 1, 1);
+        gtk_grid_attach(GTK_GRID(grid), radio, (int)(pos % 3), (int)(pos / 3), 1, 1);
+        pos++;
     }
     gtk_box_append(GTK_BOX(box), grid);
     gtk_check_button_set_active(GTK_CHECK_BUTTON(radios[0]), TRUE);

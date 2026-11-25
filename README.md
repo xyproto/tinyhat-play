@@ -7,8 +7,8 @@ It searches the CHIP-8 Archive (for CHIP-8), DuckDuckGo and itch.io, downloads t
 Included programs:
 
 * `tinyhat-play`, the GTK4 search and download window. `tinyhat-play --choose TITLE` shows a searchable list of the lines on stdin and prints the chosen one, which `tinyhat-emulate` uses for picking games.
-* `tinyhat-emulate`, which starts a game for one of the supported platforms, or lets you pick one from `~/ROMs/PLATFORM` and USB sticks: `tinyhat-emulate nes|snes|genesis|sms|gba|c64 [game]`.
-* `tinyhat-retro`, a small SDL3 libretro frontend, used for the NES, Genesis and Master System cores, with gamepad support.
+* `tinyhat-emulate`, which starts a game for one of the supported platforms, or lets you pick one from `~/roms/PLATFORM` and USB sticks: `tinyhat-emulate nes|snes|genesis|sms|gba|c64|zx [game]`.
+* `tinyhat-retro`, a small SDL3 libretro frontend, used for the NES, Genesis, Master System and ZX Spectrum cores, with gamepad support.
 
 ## Building
 
@@ -29,6 +29,8 @@ Build dependencies: `gtk4`, `curl` and `sdl3`.
 | DOS | `dosbox-x` (or `tinyhat-dosbox` on Tiny Hat) |
 | TIC-80 | `tic-80` |
 | CHIP-8 | `octo-run` (from [c-octo](https://github.com/JohnEarnest/c-octo)) |
+| ZX Spectrum | `libretro-fuse` |
+| Windows (WINE) | `wine` (the platform is only shown when `wine` is in the `PATH`) |
 
 On [Tiny Hat](https://roboticoverlords.org/tinyhat), `fuzzel`, `tinyhat-pick` and `tinyhat-notice` are used when available.
 

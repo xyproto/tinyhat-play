@@ -1,5 +1,5 @@
 // tinyhat-retro: a small SDL3 frontend for libretro emulator cores.
-// Usage: tinyhat-retro core.so game
+// Usage: tinyhat-retro core.so [game]
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <dlfcn.h>
@@ -44,6 +44,7 @@ static int frame_w, frame_h;
 static float aspect = 4.0f / 3.0f;
 static char data_dir[1024];
 static char save_base[2048];
+static bool keyboard_core;
 
 static void core_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -150,9 +151,39 @@ static bool start_key(void)
     return down && !alt_enter;
 }
 
+static SDL_Keycode retro_keycode(unsigned id)
+{
+    switch (id) {
+    case RETROK_UP: return SDLK_UP;
+    case RETROK_DOWN: return SDLK_DOWN;
+    case RETROK_RIGHT: return SDLK_RIGHT;
+    case RETROK_LEFT: return SDLK_LEFT;
+    case RETROK_RSHIFT: return SDLK_RSHIFT;
+    case RETROK_LSHIFT: return SDLK_LSHIFT;
+    case RETROK_RCTRL: return SDLK_RCTRL;
+    case RETROK_LCTRL: return SDLK_LCTRL;
+    case RETROK_RALT: return SDLK_RALT;
+    case RETROK_LALT: return SDLK_LALT;
+    case RETROK_LSUPER: return SDLK_LGUI;
+    case RETROK_RSUPER: return SDLK_RGUI;
+    }
+    return id > 0 && id < 128 ? (SDL_Keycode)id : SDLK_UNKNOWN;
+}
+
+static int16_t keyboard_state(unsigned id)
+{
+    keyboard_core = true;
+    SDL_Keycode k = retro_keycode(id);
+    SDL_Scancode sc = k == SDLK_UNKNOWN ? SDL_SCANCODE_UNKNOWN : SDL_GetScancodeFromKey(k, NULL);
+    return sc != SDL_SCANCODE_UNKNOWN && SDL_GetKeyboardState(NULL)[sc];
+}
+
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
     (void)index;
+    if ((device & RETRO_DEVICE_MASK) == RETRO_DEVICE_KEYBOARD) {
+        return keyboard_state(id);
+    }
     if (port >= PORTS || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD) {
         return 0;
     }
@@ -181,7 +212,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
         case RETRO_DEVICE_ID_JOYPAD_SELECT: if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK)) return 1; break;
         }
     }
-    if (port != 0) {
+    if (port != 0 || keyboard_core) {
         return 0;
     }
     switch (id) {
@@ -319,8 +350,8 @@ static void draw(void)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "usage: tinyhat-retro core.so game\n");
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: tinyhat-retro core.so [game]\n");
         return 1;
     }
     void *core = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -359,8 +390,11 @@ int main(int argc, char **argv)
         }
     }
     mkdir(data_dir, 0755);
-    const char *base = strrchr(argv[2], '/');
-    snprintf(save_base, sizeof(save_base), "%s/%s", data_dir, base ? base + 1 : argv[2]);
+    const char *path = argc == 3 ? argv[2] : NULL;
+    const char *name = path ? path : "nogame";
+    const char *base = strrchr(name, '/');
+    name = base ? base + 1 : name;
+    snprintf(save_base, sizeof(save_base), "%s/%s", data_dir, name);
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "tinyhat-retro: %s\n", SDL_GetError());
@@ -377,11 +411,11 @@ int main(int argc, char **argv)
 
     struct retro_system_info info = { 0 };
     core_get_system_info(&info);
-    struct retro_game_info game = { .path = argv[2] };
+    struct retro_game_info game = { .path = path };
     void *rom = NULL;
-    if (!info.need_fullpath) {
+    if (path && !info.need_fullpath) {
         size_t size = 0;
-        rom = SDL_LoadFile(argv[2], &size);
+        rom = SDL_LoadFile(path, &size);
         if (!rom) {
             fprintf(stderr, "tinyhat-retro: %s\n", SDL_GetError());
             return 1;
@@ -389,8 +423,8 @@ int main(int argc, char **argv)
         game.data = rom;
         game.size = size;
     }
-    if (!core_load_game(&game)) {
-        fprintf(stderr, "tinyhat-retro: %s could not load %s\n", info.library_name, argv[2]);
+    if (!core_load_game(path ? &game : NULL)) {
+        fprintf(stderr, "tinyhat-retro: %s could not load %s\n", info.library_name, name);
         return 1;
     }
     for (unsigned port = 0; port < PORTS; port++) {
@@ -405,7 +439,11 @@ int main(int argc, char **argv)
         aspect = (float)av.geometry.base_width / av.geometry.base_height;
     }
     char title[256];
-    snprintf(title, sizeof(title), "%s - %s", base ? base + 1 : argv[2], info.library_name);
+    if (path) {
+        snprintf(title, sizeof(title), "%s - %s", name, info.library_name);
+    } else {
+        snprintf(title, sizeof(title), "%s", info.library_name);
+    }
     window = SDL_CreateWindow(title, (int)(av.geometry.base_height * aspect * 3), (int)av.geometry.base_height * 3, SDL_WINDOW_RESIZABLE);
     renderer = window ? SDL_CreateRenderer(window, NULL) : NULL;
     if (!renderer) {
