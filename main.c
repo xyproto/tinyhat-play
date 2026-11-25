@@ -99,6 +99,8 @@ static gboolean available(const Platform* p)
     return found != NULL;
 }
 
+static gboolean online(void);
+
 static char* rom_dir_for(const Platform* p)
 {
     return g_build_filename(home(), p->romdir, NULL);
@@ -1784,6 +1786,12 @@ static gpointer worker(gpointer data)
         g_free(query);
         return NULL;
     }
+    if (!online()) {
+        status("The system appears to be offline, so \"%s\" can not be searched for", query);
+        finish(NULL);
+        g_free(query);
+        return NULL;
+    }
     ddg_blocked = ddg_recently_blocked();
     host_last = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     host_limited = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -1982,6 +1990,189 @@ static int choose(const char* title)
     return choose_status;
 }
 
+static gboolean has_default_route(void)
+{
+    char *data = NULL, **lines;
+    gboolean found = FALSE;
+    if (g_file_get_contents("/proc/net/route", &data, NULL, NULL)) {
+        lines = g_strsplit(data, "\n", -1);
+        for (int i = 1; lines[i] && !found; i++) {
+            char iface[64], dest[16];
+            if (sscanf(lines[i], "%63s %15s", iface, dest) == 2 && !strcmp(dest, "00000000"))
+                found = TRUE;
+        }
+        g_strfreev(lines);
+        g_free(data);
+    }
+    data = NULL;
+    if (!found && g_file_get_contents("/proc/net/ipv6_route", &data, NULL, NULL)) {
+        lines = g_strsplit(data, "\n", -1);
+        for (int i = 0; lines[i] && !found; i++)
+            if (!strncmp(lines[i], "00000000000000000000000000000000 00 ", 36) && !strstr(lines[i], " lo"))
+                found = TRUE;
+        g_strfreev(lines);
+        g_free(data);
+    }
+    return found;
+}
+
+static gboolean online(void)
+{
+    CURL* c;
+    CURLcode rc;
+    if (!g_file_test("/proc/net/route", G_FILE_TEST_EXISTS))
+        return TRUE;
+    if (!has_default_route())
+        return FALSE;
+    if (!(c = curl_easy_init()))
+        return TRUE;
+    curl_easy_setopt(c, CURLOPT_URL, "https://html.duckduckgo.com/");
+    curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 1L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 4L);
+    rc = curl_easy_perform(c);
+    curl_easy_cleanup(c);
+    return rc != CURLE_COULDNT_RESOLVE_HOST && rc != CURLE_COULDNT_CONNECT && rc != CURLE_OPERATION_TIMEDOUT;
+}
+
+typedef struct {
+    char* label;
+    char* path;
+    const Platform* plat;
+} Downloaded;
+
+static void downloaded_free(gpointer p)
+{
+    Downloaded* d = p;
+    g_free(d->label);
+    g_free(d->path);
+    g_free(d);
+}
+
+static void downloaded_add(GPtrArray* games, GHashTable* seen, const char* path, const Platform* p)
+{
+    Downloaded* d;
+    char* base;
+    if (g_hash_table_contains(seen, path) || !g_file_test(path, G_FILE_TEST_IS_REGULAR))
+        return;
+    g_hash_table_add(seen, g_strdup(path));
+    base = g_path_get_basename(path);
+    d = g_new0(Downloaded, 1);
+    d->label = g_strdup_printf("%s (%s)", base, p->name);
+    d->path = g_strdup(path);
+    d->plat = p;
+    g_ptr_array_add(games, d);
+    g_free(base);
+}
+
+static gint downloaded_cmp(gconstpointer a, gconstpointer b)
+{
+    const Downloaded *x = *(Downloaded* const*)a, *y = *(Downloaded* const*)b;
+    return g_ascii_strcasecmp(x->label, y->label);
+}
+
+static GPtrArray* downloaded_games(void)
+{
+    GPtrArray* games = g_ptr_array_new_with_free_func(downloaded_free);
+    GHashTable* seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    char *path = index_path(), *data = NULL;
+    if (g_file_get_contents(path, &data, NULL, NULL)) {
+        char** lines = g_strsplit(data, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            char *tab = strchr(lines[i], '\t'), *slash;
+            if (!tab || !(slash = strchr(lines[i], '/')) || slash > tab)
+                continue;
+            *slash = '\0';
+            for (size_t j = 0; j < G_N_ELEMENTS(platforms); j++)
+                if (!strcmp(platforms[j].dir, lines[i]) && available(&platforms[j]))
+                    downloaded_add(games, seen, tab + 1, &platforms[j]);
+        }
+        g_strfreev(lines);
+        g_free(data);
+    }
+    g_free(path);
+    for (size_t i = 0; i < G_N_ELEMENTS(platforms); i++) {
+        const Platform* p = &platforms[i];
+        char* dir = rom_dir_for(p);
+        GDir* d = available(p) ? g_dir_open(dir, 0, NULL) : NULL;
+        const char* n;
+        while (d && (n = g_dir_read_name(d))) {
+            if (n[0] != '.' && ext_in(n, p->exts)) {
+                char* f = g_build_filename(dir, n, NULL);
+                downloaded_add(games, seen, f, p);
+                g_free(f);
+            }
+        }
+        if (d)
+            g_dir_close(d);
+        g_free(dir);
+    }
+    g_hash_table_destroy(seen);
+    g_ptr_array_sort(games, downloaded_cmp);
+    return games;
+}
+
+static char* pick(const char* title, const char* lines)
+{
+    char *fuzzel = g_find_program_in_path("fuzzel"), *self = g_file_read_link("/proc/self/exe", NULL), *out = NULL, *prompt;
+    const char* desktop = g_getenv("XDG_CURRENT_DESKTOP");
+    GSubprocess* sp;
+    prompt = g_strdup_printf("%s ❯ ", title);
+    if (fuzzel && desktop && !strcmp(desktop, "dwl"))
+        sp = g_subprocess_new(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE, NULL, fuzzel, "--dmenu", "--prompt", prompt, NULL);
+    else
+        sp = g_subprocess_new(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE, NULL, self ? self : "tinyhat-play", "--choose", title, NULL);
+    if (sp) {
+        if (!g_subprocess_communicate_utf8(sp, lines, NULL, &out, NULL, NULL) || !g_subprocess_get_if_exited(sp)
+            || g_subprocess_get_exit_status(sp)) {
+            g_free(out);
+            out = NULL;
+        }
+        g_object_unref(sp);
+    }
+    if (out)
+        g_strchomp(out);
+    g_free(prompt);
+    g_free(self);
+    g_free(fuzzel);
+    return out;
+}
+
+static int offline_menu(void)
+{
+    GPtrArray* games = downloaded_games();
+    GString* lines = g_string_new(NULL);
+    char* chosen;
+    int rc = 0;
+    if (!games->len) {
+        notify("The system appears to be offline", "No games have been downloaded yet. Connect to the internet to search for homebrew games.");
+        fputs("tinyhat-play: the system appears to be offline, and no games have been downloaded yet\n", stderr);
+        g_ptr_array_free(games, TRUE);
+        g_string_free(lines, TRUE);
+        return 1;
+    }
+    notify("The system appears to be offline", "Choose one of the downloaded games instead.");
+    for (guint i = 0; i < games->len; i++)
+        g_string_append_printf(lines, "%s\n", ((Downloaded*)games->pdata[i])->label);
+    chosen = pick("Offline, play a downloaded game", lines->str);
+    for (guint i = 0; chosen && *chosen && i < games->len; i++) {
+        Downloaded* d = games->pdata[i];
+        GError* err = NULL;
+        if (strcmp(d->label, chosen))
+            continue;
+        plat = d->plat;
+        if (!spawn_game(d->path, &err)) {
+            fprintf(stderr, "tinyhat-play: could not start the emulator: %s\n", err->message);
+            g_error_free(err);
+            rc = 1;
+        }
+        break;
+    }
+    g_free(chosen);
+    g_string_free(lines, TRUE);
+    g_ptr_array_free(games, TRUE);
+    return rc;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1 && !strcmp(argv[1], "--choose"))
@@ -2011,6 +2202,11 @@ int main(int argc, char** argv)
         worker(query);
         curl_global_cleanup();
         return play_ok ? 0 : 1;
+    }
+    if (!online()) {
+        int rc = offline_menu();
+        curl_global_cleanup();
+        return rc;
     }
     gtk_init();
     GMainLoop* loop = g_main_loop_new(NULL, FALSE);

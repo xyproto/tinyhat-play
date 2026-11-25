@@ -4,6 +4,8 @@ A C+GTK frontend for searching for, downloading and playing a homebrew retro gam
 
 It searches the CHIP-8 Archive (for CHIP-8), DuckDuckGo and itch.io, downloads the game to `~/roms/$PLATFORM` (or `~/DOS`) and starts it.
 
+When the system is offline, it does not search, but says so and lists the games that have already been downloaded, to pick one to play (with `fuzzel` on Tiny Hat).
+
 Included programs:
 
 * `tinyhat-play`, the GTK4 search and download window. `tinyhat-play --choose TITLE` shows a searchable list of the lines on stdin and prints the chosen one, which `tinyhat-emulate` uses for picking games.
